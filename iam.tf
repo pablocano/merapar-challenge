@@ -38,3 +38,17 @@ resource "aws_iam_role_policy" "lambda_role_policy" {
   role   = aws_iam_role.lambda_role.id
   policy = data.aws_iam_policy_document.aws_lambda_permission.json
 }
+
+data "aws_iam_policy_document" "allow_object_access" {
+  statement {
+    actions = ["s3:GetObject"]
+    principals {
+      identifiers = ["*"]
+      type        = "*"
+    }
+    resources = [
+      aws_s3_bucket.web_bucket.arn,
+      "${aws_s3_bucket.web_bucket.arn}/*"
+    ]
+  }
+}

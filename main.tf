@@ -3,14 +3,20 @@ provider "aws" {
   profile = "biobio"
 }
 
+################# Option 1 #################
+
+# The s3 bucket to use as static web host
 resource "aws_s3_bucket" "web_bucket" {
   bucket = var.bucket_name
+
+  force_destroy = true
 
   tags = {
     Application = "merapar"
   }
 }
 
+# Configure the s3 bucket as a web host
 resource "aws_s3_bucket_website_configuration" "web_configuration" {
   bucket = aws_s3_bucket.web_bucket.id
 
@@ -23,6 +29,7 @@ resource "aws_s3_bucket_website_configuration" "web_configuration" {
   }
 }
 
+# Configure the s3 bucket as public
 resource "aws_s3_bucket_public_access_block" "public_access_block" {
   bucket                  = aws_s3_bucket.web_bucket.id
   block_public_acls       = false
@@ -31,25 +38,13 @@ resource "aws_s3_bucket_public_access_block" "public_access_block" {
   restrict_public_buckets = false
 }
 
+# Configure the access policy to the s3 bucket (to allow internet access)
 resource "aws_s3_bucket_policy" "allow_public_get" {
   bucket = aws_s3_bucket.web_bucket.id
   policy = data.aws_iam_policy_document.allow_object_access.json
 }
 
-data "aws_iam_policy_document" "allow_object_access" {
-  statement {
-    actions = ["s3:GetObject"]
-    principals {
-      identifiers = ["*"]
-      type        = "*"
-    }
-    resources = [
-      aws_s3_bucket.web_bucket.arn,
-      "${aws_s3_bucket.web_bucket.arn}/*"
-    ]
-  }
-}
-
+# The system manager parameter store, to store the dynamic string
 resource "aws_ssm_parameter" "dynamic_string" {
   name  = var.ssm_parameter_name
   type  = "String"
@@ -60,20 +55,21 @@ resource "aws_ssm_parameter" "dynamic_string" {
   }
 }
 
-# Package the Lambda function code
+# Package the lambda function code to edit the index.html
 data "archive_file" "lambda_code" {
   type        = "zip"
   source_file = "${path.module}/lambda/edit_index.py"
-  output_path = "${path.module}/lambda/function.zip"
+  output_path = "${path.module}/lambda/edit_index.zip"
 }
 
-# Lambda function
+# Lambda function to update the index.html
 resource "aws_lambda_function" "update_html" {
-  filename      = data.archive_file.lambda_code.output_path
-  function_name = "update_html_function"
-  role          = aws_iam_role.lambda_role.arn
-  handler       = "edit_index.lambda_handler"
-  runtime       = "python3.12"
+  filename         = data.archive_file.lambda_code.output_path
+  function_name    = "update_html_function"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "edit_index.lambda_handler"
+  runtime          = "python3.12"
+  source_code_hash = data.archive_file.lambda_code.output_base64sha256
 
   environment {
     variables = {
@@ -87,6 +83,7 @@ resource "aws_lambda_function" "update_html" {
   }
 }
 
+# Event bridge event to monitor the changes in the dynamic string
 resource "aws_cloudwatch_event_rule" "ssm_param_change" {
   name        = "ssm-param-change"
   description = "Trigger when SSM parameter changes"
@@ -103,12 +100,14 @@ resource "aws_cloudwatch_event_rule" "ssm_param_change" {
 PATTERN
 }
 
+# Configure the target of the event to invoke a lambda function
 resource "aws_cloudwatch_event_target" "invoke_lambda" {
   rule      = aws_cloudwatch_event_rule.ssm_param_change.name
   target_id = "invoke-lambda"
   arn       = aws_lambda_function.update_html.arn
 }
 
+# Configure the lambda to be executed from the event bridge
 resource "aws_lambda_permission" "allow_cloudwatch" {
   statement_id  = "AllowExecutionFromCloudWatch"
   action        = "lambda:InvokeFunction"
@@ -117,5 +116,15 @@ resource "aws_lambda_permission" "allow_cloudwatch" {
   source_arn    = aws_cloudwatch_event_rule.ssm_param_change.arn
 }
 
+# Run the lambda function at the end to create the first index.html
+resource "aws_lambda_invocation" "create_first_index" {
+  function_name = aws_lambda_function.update_html.function_name
+  input         = "{}"
+  depends_on = [
+    aws_s3_bucket.web_bucket,
+    aws_lambda_function.update_html,
+    aws_ssm_parameter.dynamic_string
+  ]
+}
 
 

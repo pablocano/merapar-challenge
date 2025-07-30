@@ -13,6 +13,7 @@ variable "bucket_name" {
 variable "initial_string" {
   description = "The initial value of the dynamic string"
   type        = string
+  default     = "initial value"
 }
 
 variable "ssm_parameter_name" {
