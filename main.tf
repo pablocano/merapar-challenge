@@ -49,6 +49,7 @@ resource "aws_ssm_parameter" "dynamic_string" {
   name  = var.ssm_parameter_name
   type  = "String"
   value = var.initial_string
+  overwrite = false
 
   tags = {
     Application = "merapar"
@@ -125,6 +126,73 @@ resource "aws_lambda_invocation" "create_first_index" {
     aws_lambda_function.update_html,
     aws_ssm_parameter.dynamic_string
   ]
+}
+
+################# Option 2 #################
+
+# Package the lambda function code to use as a api endpoint
+data "archive_file" "lambda_code_host" {
+  type        = "zip"
+  source_file = "${path.module}/lambda/lambda_host.py"
+  output_path = "${path.module}/lambda/lambda_host.zip"
+}
+
+# Lambda function to act as a host
+resource "aws_lambda_function" "lambda_host" {
+  filename         = data.archive_file.lambda_code_host.output_path
+  function_name    = "lambda_host_function"
+  role             = aws_iam_role.lambda_role.arn
+  handler          = "lambda_host.lambda_handler"
+  runtime          = "python3.12"
+  source_code_hash = data.archive_file.lambda_code_host.output_base64sha256
+
+  environment {
+    variables = {
+      PARAM_NAME = var.ssm_parameter_name
+    }
+  }
+
+  tags = {
+    Application = "merapar"
+  }
+}
+
+# Create an Api Gateway to route request to the lambda host
+resource "aws_apigatewayv2_api" "http_host" {
+  name          = "http_host"
+  protocol_type = "HTTP"
+}
+
+# Create an integration to call the lambda function from the api
+resource "aws_apigatewayv2_integration" "lambda_integration" {
+  api_id                 = aws_apigatewayv2_api.http_host.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.lambda_host.invoke_arn
+  integration_method     = "POST"
+  payload_format_version = "2.0"
+}
+
+# Create the default route of the api
+resource "aws_apigatewayv2_route" "default_route" {
+  api_id    = aws_apigatewayv2_api.http_host.id
+  route_key = "$default"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda_integration.id}"
+}
+
+# Create the default stage
+resource "aws_apigatewayv2_stage" "default_stage" {
+  api_id      = aws_apigatewayv2_api.http_host.id
+  auto_deploy = true
+  name        = "$default"
+}
+
+# Configure the lambda function to be executed from the API gateway
+resource "aws_lambda_permission" "allow_apigateway" {
+  statement_id  = "AllowExecutionFromAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.lambda_host.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.http_host.execution_arn}/*"
 }
 
 
